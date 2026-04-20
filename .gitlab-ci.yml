@@ -1,0 +1,26 @@
+stages:
+  - test
+
+secrets-scan:
+  stage: test
+  script:
+    - echo "Running repo-local secrets scanner..."
+    # Scan the current working branch; pass a deterministic report path
+    - ./tools/secrets_scan/ok_scan_secrets.sh "${CI_COMMIT_REF_NAME}" --path . --report "./secrets_scan_report_${CI_COMMIT_REF_SLUG}.txt" > "./secrets_scan_report_${CI_COMMIT_REF_SLUG}.sarif.json" 2>&1 || EXIT_CODE=$?
+    - echo "---- secrets-scan report ----"
+    - cat "./secrets_scan_report_${CI_COMMIT_REF_SLUG}.txt" || true
+    - |
+      if [ "${EXIT_CODE:-0}" -ne 0 ]; then
+        echo "Secrets scanner found issues (exit code: ${EXIT_CODE}). Failing job."
+        exit ${EXIT_CODE}
+      fi
+  artifacts:
+    when: always
+    paths:
+      - "secrets_scan_report_${CI_COMMIT_REF_SLUG}.txt"
+      - "secrets_scan_report_${CI_COMMIT_REF_SLUG}.sarif.json"
+  tags:
+    - easypart-dev
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH
