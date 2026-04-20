@@ -144,23 +144,23 @@ scan_branch() {
     
     find_cmd="$find_cmd \( $ext_pattern \)"
     
+    # Combinaison de tous les patterns en un seul appel grep
+    local combined_pattern
+    combined_pattern=$(printf '%s\n' "${PATTERNS[@]}" | paste -sd '|')
+
     # Exécution de la recherche
     while IFS= read -r -d '' file; do
         if [ -f "$file" ] && [ -r "$file" ]; then
             if grep -qI -E "(^sops:|ENC\[)" "$file" 2>/dev/null; then
                 continue
             fi
-            # Vérification de chaque pattern
-            for pattern in "${PATTERNS[@]}"; do
-                local matches=$(grep -iHn -E "$pattern" "$file" 2>/dev/null || true)
-                if [ -n "$matches" ]; then
-                    echo -e "${RED}  ⚠️  Secret potentiel trouvé dans: $file${NC}"
-                    echo "FICHIER: $file" >> "$REPORT_FILE"
-                    echo "$matches" >> "$REPORT_FILE"
-                    echo "" >> "$REPORT_FILE"
-                    ((secrets_found++))
-                fi
-            done
+            local matches
+            matches=$(grep -iHn -I -E "$combined_pattern" "$file" 2>/dev/null || true)
+            if [ -n "$matches" ]; then
+                echo -e "${RED}  ⚠️  Secret potentiel trouvé dans: $file${NC}"
+                { echo "FICHIER: $file"; echo "$matches"; echo ""; } >> "$REPORT_FILE"
+                secrets_found=$(( secrets_found + $(echo "$matches" | wc -l) ))
+            fi
         fi
     done < <(eval "$find_cmd -print0" 2>/dev/null)
     
