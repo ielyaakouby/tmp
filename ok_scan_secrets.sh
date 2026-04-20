@@ -110,7 +110,7 @@ cat > "$REPORT_FILE" << EOF
 === RAPPORT DE SCAN DE SECRETS ===
 Date: $(date)
 Dépôt: $(git remote get-url origin 2>/dev/null || echo "Local")
-Branche courante: $(git branch --show-current)
+Branche courante: $CURRENT_BRANCH
 
 EOF
 
@@ -119,14 +119,13 @@ scan_branch() {
     local branch=$1
     local branch_name=$(echo "$branch" | sed 's|remotes/origin/||')
     local secrets_found=0
-    
+
     echo -e "${YELLOW}Analyse de la branche: $branch_name${NC}"
     echo "=== BRANCHE: $branch_name ===" >> "$REPORT_FILE"
-    
-    
+
     # Construction de la commande find avec exclusions
     local find_cmd="find . -type f"
-    
+
     # Ajout des extensions
     local ext_pattern=""
     for ext in "${FILE_EXTENSIONS[@]}"; do
@@ -136,14 +135,14 @@ scan_branch() {
             ext_pattern="$ext_pattern -o -name \"$ext\""
         fi
     done
-    
+
     # Ajout des exclusions
     for exclude in "${EXCLUDE_PATTERNS[@]}"; do
         find_cmd="$find_cmd ! -path \"$exclude\""
     done
-    
+
     find_cmd="$find_cmd \( $ext_pattern \)"
-    
+
     # Exécution de la recherche
     while IFS= read -r -d '' file; do
         if [ -f "$file" ] && [ -r "$file" ]; then
@@ -152,29 +151,21 @@ scan_branch() {
             fi
             # Vérification de chaque pattern
             for pattern in "${PATTERNS[@]}"; do
-                local matches=$(grep -iHn -E "$pattern" "$file" 2>/dev/null || true)
-                        if [ -n "$matches" ]; then
-                                echo -e "${RED}  ⚠️  Secret potentiel trouvé dans: $file${NC}"
-                                echo "FICHIER: $file" >> "$REPORT_FILE"
-                                # Append all matching lines to the report and SARIF temp
-                                while IFS= read -r mline; do
-                                    echo "$mline" >> "$REPORT_FILE"
-                                    # parse file:line:match
-                                    file_part="${mline%%:*}"
-                                    rest="${mline#*:}"
-                                    line_part="${rest%%:*}"
-                                    msg_part="${rest#*:}"
-                                    # escape for JSON
-                                    esc_msg=$(printf '%s' "$msg_part" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/\r//g')
-                                    echo "{\"ruleId\":\"secret\",\"level\":\"warning\",\"message\":{\"text\":\"$esc_msg\"},\"locations\":[{\"physicalLocation\":{\"artifactLocation\":{\"uri\":\"$file_part\"},\"region\":{\"startLine\":$line_part}}}] }" >> "$SARIF_TMP"
-                                done <<< "$matches"
-                                echo "" >> "$REPORT_FILE"
-                                ((secrets_found++))
-                            fi
+                local matches
+                matches=$(grep -iHn -E "$pattern" "$file" 2>/dev/null || true)
+                if [ -n "$matches" ]; then
+                    echo -e "${RED}  ⚠️  Secret potentiel trouvé dans: $file${NC}"
+                    echo "FICHIER: $file" >> "$REPORT_FILE"
+                    while IFS= read -r mline; do
+                        echo "$mline" >> "$REPORT_FILE"
+                    done <<< "$matches"
+                    echo "" >> "$REPORT_FILE"
+                    ((secrets_found++))
+                fi
             done
         fi
     done < <(eval "$find_cmd -print0" 2>/dev/null)
-    
+
     if [ $secrets_found -eq 0 ]; then
         echo -e "${GREEN}  ✅ Aucun secret détecté${NC}"
         echo "Aucun secret détecté" >> "$REPORT_FILE"
@@ -182,21 +173,17 @@ scan_branch() {
         echo -e "${RED}  ⚠️  $secrets_found secret(s) potentiel(s) trouvé(s)${NC}"
         echo "TOTAL: $secrets_found secret(s) potentiel(s) trouvé(s)" >> "$REPORT_FILE"
     fi
-    
+
     echo "" >> "$REPORT_FILE"
     echo "---" >> "$REPORT_FILE"
     echo ""
-    
+
     return $secrets_found
 }
 
 echo "Branche analysée: $CURRENT_BRANCH"
 
 total_secrets=0
-
-# Prepare SARIF temp file
-SARIF_TMP=$(mktemp)
-
 
 # Scan the current branch (no loop needed)
 scan_branch "$CURRENT_BRANCH"
@@ -217,7 +204,6 @@ else
 fi
 
 # Ajout du résumé au rapport
-
 cat >> "$REPORT_FILE" << EOF
 
 === RÉSUMÉ FINAL ===
@@ -228,39 +214,6 @@ EOF
 
 echo ""
 echo -e "${BLUE}Scan terminé. Rapport sauvegardé dans: $REPORT_FILE${NC}"
-
-# Génération d'un fichier SARIF pour intégration SAST GitLab
-SARIF_FILE="${REPORT_FILE%.*}.sarif.json"
-if [ -s "$SARIF_TMP" ]; then
-        printf '{"version":"2.1.0","$schema":"https://schemastore.azurewebsites.net/schemas/json/sarif-2.1.0.json","runs":[{"tool":{"driver":{"name":"ok_scan_secrets","rules":[]}},"results":[' > "$SARIF_FILE"
-        first=1
-        while IFS= read -r line; do
-                if [ $first -eq 1 ]; then
-                        printf '%s' "$line" >> "$SARIF_FILE"
-                        first=0
-                else
-                        printf ',%s' "$line" >> "$SARIF_FILE"
-                fi
-        done < "$SARIF_TMP"
-        printf ']}}]\n' >> "$SARIF_FILE"
-else
-        cat > "$SARIF_FILE" << EOF
-{
-    "version": "2.1.0",
-    "\$schema": "https://schemastore.azurewebsites.net/schemas/json/sarif-2.1.0.json",
-    "runs": [
-        {
-            "tool": { "driver": { "name": "ok_scan_secrets", "rules": [] } },
-            "results": []
-        }
-    ]
-}
-EOF
-fi
-
-# Nettoyage et sortie
-rm -f "$SARIF_TMP" || true
-echo -e "${BLUE}SARIF généré: $SARIF_FILE${NC}"
 
 # Exit with non-zero if any secrets found (standard CI behavior)
 if [ $total_secrets -gt 0 ]; then
